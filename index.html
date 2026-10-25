@@ -74,6 +74,11 @@ a.btn{display:block;text-align:center;text-decoration:none}
 .hist button{border:1.5px solid var(--line);background:transparent;color:var(--ink);border-radius:8px;padding:5px 10px;font-size:12px}
 .sect{font-family:var(--display);font-size:18px;margin:24px 0 8px}
 
+.done-amt{font-family:var(--display);font-weight:700;font-size:56px;line-height:1.05;letter-spacing:-0.02em;margin:6px 0 2px}
+.done-to{font-size:18px;font-weight:600}
+.done-sub{color:var(--mute);font-size:14px;margin:4px 0 22px}
+.btn.good{background:#16a34a;color:#fff}
+.btn.bad{background:transparent;color:#d6336c;border:2px solid #d6336c}
 .toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 28px);transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:11px 16px;border-radius:12px;font-size:14px;z-index:50;display:none;max-width:88vw}
 </style>
 </head>
@@ -98,6 +103,7 @@ a.btn{display:block;text-align:center;text-decoration:none}
   <div class="meta" id="payMeta"></div>
   <input class="amount" id="amt" type="number" inputmode="decimal" placeholder="₹0" min="0" step="any">
   <div class="after" id="after"></div>
+  <input id="payTo" placeholder="Paid to (optional, e.g. Canteen, Zudio)" maxlength="40" style="width:100%;border:1.5px solid var(--line);background:transparent;color:var(--ink);border-radius:10px;padding:11px;font-size:16px;font-family:var(--body);margin-bottom:12px">
   <a class="btn primary disabled" id="openBtn" href="#">Open app to pay</a>
   <div class="after" style="margin:6px 0 0;font-size:12px">Deducts the amount, copies it, and opens your UPI app. Scan the QR there and paste or type the amount.</div>
   <button class="btn ghost" id="cashBtn" disabled>Log cash spend</button>
@@ -106,11 +112,12 @@ a.btn{display:block;text-align:center;text-decoration:none}
 
 <!-- did it work? -->
 <div class="scrim" id="doneSheet"><div class="sheet">
-  <h2>Did the payment go through?</h2>
-  <div class="meta" id="doneMeta"></div>
-  <button class="btn primary" id="doneYes">Yes, it went through</button>
-  <button class="btn ghost" id="doneNo">No, refund it to the category</button>
-  <button class="btn ghost" id="doneLater">Ask me later</button>
+  <div class="meta" style="margin-bottom:2px">Last payment</div>
+  <div class="done-amt" id="doneAmt"></div>
+  <div class="done-to" id="doneTo"></div>
+  <div class="done-sub" id="doneSub"></div>
+  <button class="btn good" id="doneYes">Successful</button>
+  <button class="btn bad" id="doneNo">Not successful</button>
 </div></div>
 
 <!-- settings sheet -->
@@ -224,6 +231,7 @@ $('#grid').addEventListener('click',e=>{
   $('#payTitle').textContent=c.name;
   $('#payMeta').textContent=inr(c.bal)+' left';
   $('#amt').value='';
+  $('#payTo').value='';
   setOpenLink();
   checkAmt();
   open('#paySheet');
@@ -248,14 +256,14 @@ $('#amt').addEventListener('input',checkAmt);
 function spend(c,amount,payee){
   c.bal=Math.round((c.bal-amount)*100)/100;
   const id=uid();
-  S.log.unshift({id,cat:c.id,catName:c.name,amount,payee:payee||'Cash',t:Date.now()});
+  S.log.unshift({id,cat:c.id,catName:c.name,amount,payee:(payee===undefined?'Cash':payee),t:Date.now()});
   save();render();
   return id;
 }
 $('#openBtn').addEventListener('click',e=>{
   const v=amtVal();
   if(!(v>0&&v<=cur.bal)){e.preventDefault();return}
-  const id=spend(cur,v,SCHEMES[S.upi].name);
+  const id=spend(cur,v,$('#payTo').value.trim()||'');
   S.awaiting=id;save();
   try{navigator.clipboard.writeText(v.toFixed(2)).catch(()=>{})}catch(err){}
   close('#paySheet');
@@ -270,16 +278,17 @@ function checkAwaiting(){
   if(!S.awaiting)return;
   const l=S.log.find(x=>x.id===S.awaiting);
   if(!l){S.awaiting=null;save();return}
-  $('#doneMeta').textContent=inr(l.amount)+' to '+l.payee+' from '+l.catName;
+  $('#doneAmt').textContent=inr(l.amount);
+  $('#doneTo').textContent=l.payee?('Paid to '+l.payee):('From '+l.catName);
+  $('#doneSub').textContent=(l.payee?l.catName+' · ':'')+new Date(l.t).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'});
   open('#doneSheet');
 }
-$('#doneYes').addEventListener('click',()=>{S.awaiting=null;save();close('#doneSheet');toast('Recorded')});
+$('#doneYes').addEventListener('click',()=>{S.awaiting=null;save();close('#doneSheet');toast('Marked successful')});
 $('#doneNo').addEventListener('click',()=>{
   const i=S.log.findIndex(x=>x.id===S.awaiting);
   if(i>=0){const l=S.log[i],c=S.categories.find(x=>x.id===l.cat);if(c)c.bal=Math.round((c.bal+l.amount)*100)/100;S.log.splice(i,1)}
-  S.awaiting=null;save();render();close('#doneSheet');toast('Refunded')
+  S.awaiting=null;save();render();close('#doneSheet');toast('Marked not successful. Amount returned to the category.')
 });
-$('#doneLater').addEventListener('click',()=>close('#doneSheet'));
 
 // ---- settings
 let draft=[];
@@ -328,7 +337,7 @@ $('#saveSet').addEventListener('click',()=>{
 function renderHist(){
   const h=$('#hist');
   if(!S.log.length){h.innerHTML='<div class="meta">Nothing spent yet this month.</div>';return}
-  h.innerHTML=S.log.map(l=>`<div class="hist"><div>${inr(l.amount)} · ${esc(l.catName)}<small>${esc(l.payee)} · ${new Date(l.t).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'})}</small></div><button data-undo="${l.id}">Undo</button></div>`).join('');
+  h.innerHTML=S.log.map(l=>`<div class="hist"><div>${inr(l.amount)} · ${esc(l.catName)}<small>${esc(l.payee||'No payee noted')} · ${new Date(l.t).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'})}</small></div><button data-undo="${l.id}">Undo</button></div>`).join('');
 }
 $('#hist').addEventListener('click',e=>{
   const id=e.target.dataset.undo;if(!id)return;
@@ -343,7 +352,7 @@ $('#resetAll').addEventListener('click',()=>{
 });
 
 // close sheets by tapping the dark area
-document.querySelectorAll('.scrim').forEach(s=>s.addEventListener('click',e=>{if(e.target===s)s.classList.remove('open')}));
+document.querySelectorAll('.scrim').forEach(s=>s.addEventListener('click',e=>{if(e.target===s&&s.id!=='doneSheet')s.classList.remove('open')}));
 
 load();rollover();render();
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){rollover();render();setTimeout(checkAwaiting,500)}});
