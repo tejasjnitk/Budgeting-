@@ -157,13 +157,14 @@ a.btn{display:block;text-align:center;text-decoration:none}
   <div class="scan-top"><span id="scanFor"></span><button id="scanClose">Close</button></div>
   <div class="scan-bottom">
     <div class="msg" id="scanMsg">Point at a UPI QR code</div>
-    <label>Choose a QR photo<input type="file" accept="image/*" id="photo" hidden></label>
+    <div id="scanDiag" style="font-size:11px;opacity:.7;margin-bottom:10px"></div>
+    <label>Choose a QR photo<input type="file" accept="image/*" id="photo" style="position:absolute;opacity:0;width:1px;height:1px"></label>
+    <button id="manualBtn" style="background:rgba(255,255,255,.18);border:0;color:#fff;border-radius:12px;padding:10px 16px;font-size:15px;font-family:var(--body);margin-left:6px">Type UPI ID</button>
   </div>
 </div>
 <canvas id="cv" hidden></canvas>
 <div class="toast" id="toast"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
 <script>
 (function(){
 const KEY='budgetapp.v1';
@@ -277,17 +278,61 @@ $('#cashBtn').addEventListener('click',()=>{
 let stream=null,scanning=false;
 const vid=$('#vid'),cv=$('#cv'),ctx=cv.getContext('2d',{willReadFrequently:true});
 $('#scanBtn').addEventListener('click',startScan);
+// Load the QR decoder from several CDNs in turn, so one blocked host does not break scanning.
+const JSQR_URLS=[
+  'https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js',
+  'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js',
+  'https://unpkg.com/jsqr@1.4.0/dist/jsQR.js'
+];
+let jsqrReady=null;
+function loadJsQR(){
+  if(window.jsQR)return Promise.resolve(true);
+  if(jsqrReady)return jsqrReady;
+  jsqrReady=(async()=>{
+    for(const u of JSQR_URLS){
+      const ok=await new Promise(res=>{
+        const s=document.createElement('script');
+        s.src=u;s.onload=()=>res(!!window.jsQR);s.onerror=()=>res(false);
+        document.head.appendChild(s);
+        setTimeout(()=>res(!!window.jsQR),8000);
+      });
+      if(ok)return true;
+    }
+    jsqrReady=null;return false;
+  })();
+  return jsqrReady;
+}
+loadJsQR();
+
+let diag={cam:'-',dec:'-',frames:0,err:''};
+function showDiag(){
+  $('#scanDiag').textContent='camera '+diag.cam+' · decoder '+diag.dec+' · frames '+diag.frames+(diag.err?' · '+diag.err:'');
+}
 async function startScan(){
   $('#scanFor').textContent=inr(amtVal())+' · '+cur.name;
-  $('#scanMsg').textContent='Point at a UPI QR code';
+  $('#scanMsg').textContent='Starting camera…';
+  diag={cam:'-',dec:'-',frames:0,err:''};showDiag();
   open('#scanner');
   try{
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},audio:false});
-    vid.srcObject=stream;await vid.play();
-    scanning=true;requestAnimationFrame(tick);
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}},audio:false});
+    vid.muted=true;vid.setAttribute('playsinline','');vid.srcObject=stream;
+    await vid.play();
+    try{await stream.getVideoTracks()[0].applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(e){}
+    diag.cam=vid.videoWidth+'x'+vid.videoHeight;
   }catch(err){
-    $('#scanMsg').textContent='Camera unavailable. Allow camera access, or choose a QR photo.';
+    $('#scanMsg').textContent='Camera problem ('+(err&&err.name||'error')+'). Allow camera for this app in iPhone Settings, or use a photo / type the UPI ID.';
+    diag.cam='failed';showDiag();return;
   }
+  scanning=true;
+  $('#scanMsg').textContent='Point at a UPI QR code';
+  const hasNative=!!detector;
+  diag.dec=hasNative?'native':'loading…';showDiag();
+  loadJsQR().then(ok=>{
+    diag.dec=ok?(hasNative?'native+jsQR':'jsQR'):(hasNative?'native':'NONE');
+    if(!ok&&!hasNative)$('#scanMsg').textContent='Scanner library could not load. Check internet, or use a photo / type the UPI ID.';
+    showDiag();
+  });
+  requestAnimationFrame(tick);
 }
 function stopScan(){
   scanning=false;
@@ -296,39 +341,51 @@ function stopScan(){
   close('#scanner');
 }
 $('#scanClose').addEventListener('click',stopScan);
+$('#manualBtn').addEventListener('click',()=>{
+  const id=(prompt('Payee UPI ID (for example name@okhdfcbank)')||'').trim();
+  if(!id)return;
+  if(!/^[\w.\-]{2,}@[\w.\-]{2,}$/.test(id)){$('#scanMsg').textContent='That does not look like a UPI ID.';return}
+  handleQR('upi://pay?pa='+encodeURIComponent(id));
+});
+
 let detector=null;
 try{if('BarcodeDetector' in window)detector=new BarcodeDetector({formats:['qr_code']})}catch(e){detector=null}
 let frame=0;
 async function tick(){
   if(!scanning)return;
-  if(vid.readyState===vid.HAVE_ENOUGH_DATA&&vid.videoWidth){
-    frame++;
+  if(vid.readyState>=2&&vid.videoWidth){
+    frame++;diag.frames++;
     try{
       if(detector){
         const codes=await detector.detect(vid);
         if(codes.length&&handleQR(codes[0].rawValue))return;
       }
-      if(!detector||frame%3===0){
-        const k=Math.min(1,1000/vid.videoWidth);
+    }catch(e){diag.err='native:'+(e.name||'err')}
+    try{
+      if(window.jsQR&&(!detector||frame%2===0)){
+        const k=Math.min(1,1280/vid.videoWidth);
         cv.width=Math.round(vid.videoWidth*k);cv.height=Math.round(vid.videoHeight*k);
         ctx.drawImage(vid,0,0,cv.width,cv.height);
         const img=ctx.getImageData(0,0,cv.width,cv.height);
-        const r=jsQR(img.data,img.width,img.height,{inversionAttempts:'attemptBoth'});
+        const r=window.jsQR(img.data,img.width,img.height,{inversionAttempts:'attemptBoth'});
         if(r&&r.data&&handleQR(r.data))return;
       }
-    }catch(e){}
+    }catch(e){diag.err='jsQR:'+(e.message||e.name||'err').slice(0,30)}
+    if(diag.frames%20===0)showDiag();
   }
   if(scanning)requestAnimationFrame(tick);
 }
 $('#photo').addEventListener('change',e=>{
   const f=e.target.files[0];if(!f)return;
   const img=new Image();
-  img.onload=()=>{
+  img.onload=async()=>{
+    await loadJsQR();
+    if(!window.jsQR){$('#scanMsg').textContent='Scanner library could not load.';return}
     const k=Math.min(1,1600/Math.max(img.width,img.height));
     cv.width=Math.round(img.width*k);cv.height=Math.round(img.height*k);
     ctx.drawImage(img,0,0,cv.width,cv.height);
     const d=ctx.getImageData(0,0,cv.width,cv.height);
-    const r=jsQR(d.data,d.width,d.height,{inversionAttempts:'attemptBoth'});
+    const r=window.jsQR(d.data,d.width,d.height,{inversionAttempts:'attemptBoth'});
     if(!(r&&handleQR(r.data)))$('#scanMsg').textContent='No UPI QR found in that photo.';
     URL.revokeObjectURL(img.src);
   };
