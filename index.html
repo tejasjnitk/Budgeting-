@@ -125,8 +125,19 @@ a.btn{display:block;text-align:center;text-decoration:none}
   <div class="apps" id="cfApps"></div>
   <a class="btn primary" id="cfPay" href="#"></a>
   <div class="meta" style="margin:8px 0 0;font-size:12px">If nothing opens, pick another app above and tap again. You will not be charged twice in this budget.</div>
+  <a class="btn ghost" id="cfOpenOnly" href="#">Just open the app (I'll enter the amount)</a>
+  <details style="margin-top:12px"><summary style="color:var(--mute);font-size:13px">Link details (for debugging)</summary><pre id="cfDetails" style="white-space:pre-wrap;word-break:break-all;font-size:11px;color:var(--mute)"></pre></details>
   <button class="btn ghost" id="cfRescan">Scan again</button>
   <button class="btn ghost" data-close>Cancel</button>
+</div></div>
+
+<!-- did it work? -->
+<div class="scrim" id="doneSheet"><div class="sheet">
+  <h2>Did the payment go through?</h2>
+  <div class="meta" id="doneMeta"></div>
+  <button class="btn primary" id="doneYes">Yes, it went through</button>
+  <button class="btn ghost" id="doneNo">No, refund it to the category</button>
+  <button class="btn ghost" id="doneLater">Ask me later</button>
 </div></div>
 
 <!-- settings sheet -->
@@ -180,10 +191,10 @@ const nextMonth=k=>{let [y,m]=k.split('-').map(Number);m++;if(m>12){m=1;y++}retu
 const uid=()=>Math.random().toString(36).slice(2,9);
 
 const SCHEMES={
-  phonepe:{name:'PhonePe',base:'phonepe://pay?'},
-  gpay:{name:'Google Pay',base:'gpay://upi/pay?'},
-  paytm:{name:'Paytm',base:'paytmmp://pay?'},
-  generic:{name:'UPI app',base:'upi://pay?'}
+  phonepe:{name:'PhonePe',base:'phonepe://pay?',open:'phonepe://'},
+  gpay:{name:'Google Pay',base:'gpay://upi/pay?',open:'gpay://'},
+  paytm:{name:'Paytm',base:'paytmmp://pay?',open:'paytmmp://'},
+  generic:{name:'UPI app',base:'upi://pay?',open:'upi://'}
 };
 
 function defaults(){
@@ -269,8 +280,10 @@ $('#amt').addEventListener('input',checkAmt);
 
 function spend(c,amount,payee){
   c.bal=Math.round((c.bal-amount)*100)/100;
-  S.log.unshift({id:uid(),cat:c.id,catName:c.name,amount,payee:payee||'Cash',t:Date.now()});
+  const id=uid();
+  S.log.unshift({id,cat:c.id,catName:c.name,amount,payee:payee||'Cash',t:Date.now()});
   save();render();
+  return id;
 }
 $('#cashBtn').addEventListener('click',()=>{
   const v=amtVal();if(!(v>0&&v<=cur.bal))return;
@@ -432,10 +445,12 @@ function buildUrl(app){
   return SCHEMES[app].base+qs;
 }
 function refreshPay(){
-  const a=$('#cfPay');
-  a.href=buildUrl(pending.app);
+  const a=$('#cfPay'),url=buildUrl(pending.app);
+  a.href=url;
   a.textContent='Open '+SCHEMES[pending.app].name+' and pay';
+  $('#cfOpenOnly').href=SCHEMES[pending.app].open;
   $('#cfApps').innerHTML=Object.keys(SCHEMES).map(k=>`<button class="chip${k===pending.app?' on':''}" data-app="${k}">${SCHEMES[k].name}</button>`).join('');
+  $('#cfDetails').textContent='QR data:\n'+JSON.stringify(pending.params,null,1)+'\n\nLink opened:\n'+url;
 }
 function showConfirm(){
   const {cat,amount,params}=pending;
@@ -450,17 +465,36 @@ $('#cfApps').addEventListener('click',e=>{
   pending.app=k;refreshPay();
 });
 $('#cfRescan').addEventListener('click',()=>{close('#confirmSheet');startScan()});
-// A real link tap is the most reliable way to open another app on iOS.
-$('#cfPay').addEventListener('click',()=>{
+// Deduct once per scan, however many apps are tried.
+function commit(copyAmount){
   if(!pending)return;
   if(!pending.logged){
     if(pending.amount>pending.cat.bal){toast('Not enough left');return}
-    spend(pending.cat,pending.amount,pending.params.pn||pending.params.pa);
+    const id=spend(pending.cat,pending.amount,pending.params.pn||pending.params.pa);
     pending.logged=true;
+    S.awaiting=id;save();
   }
-  // let the link navigate natively; keep the sheet open as a fallback
-  setTimeout(()=>{if(pending)toast('If payment did not open, try another app. Undo is in Settings.')},1500);
+  if(copyAmount&&navigator.clipboard){navigator.clipboard.writeText(pending.amount.toFixed(2)).then(()=>toast('Amount '+inr(pending.amount)+' copied')).catch(()=>{})}
+}
+// A real link tap is the most reliable way to open another app on iOS.
+$('#cfPay').addEventListener('click',()=>commit(false));
+$('#cfOpenOnly').addEventListener('click',()=>commit(true));
+
+// After returning from the UPI app, ask whether the payment worked.
+function checkAwaiting(){
+  if(!S.awaiting)return;
+  const l=S.log.find(x=>x.id===S.awaiting);
+  if(!l){S.awaiting=null;save();return}
+  $('#doneMeta').textContent=inr(l.amount)+' to '+l.payee+' from '+l.catName;
+  close('#confirmSheet');open('#doneSheet');
+}
+$('#doneYes').addEventListener('click',()=>{S.awaiting=null;save();close('#doneSheet');toast('Recorded')});
+$('#doneNo').addEventListener('click',()=>{
+  const i=S.log.findIndex(x=>x.id===S.awaiting);
+  if(i>=0){const l=S.log[i],c=S.categories.find(x=>x.id===l.cat);if(c)c.bal=Math.round((c.bal+l.amount)*100)/100;S.log.splice(i,1)}
+  S.awaiting=null;save();render();close('#doneSheet');toast('Refunded')
 });
+$('#doneLater').addEventListener('click',()=>close('#doneSheet'));
 document.querySelectorAll('#confirmSheet [data-close]').forEach(b=>b.addEventListener('click',()=>{pending=null}));
 
 // ---- settings
@@ -527,7 +561,8 @@ $('#resetAll').addEventListener('click',()=>{
 document.querySelectorAll('.scrim').forEach(s=>s.addEventListener('click',e=>{if(e.target===s)s.classList.remove('open')}));
 
 load();rollover();render();
-document.addEventListener('visibilitychange',()=>{if(!document.hidden){rollover();render()}});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){rollover();render();setTimeout(checkAwaiting,500)}});
+setTimeout(checkAwaiting,600);
 })();
 </script>
 </body>
