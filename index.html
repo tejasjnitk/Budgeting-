@@ -141,6 +141,9 @@ a.btn{display:block;text-align:center;text-decoration:none}
   <button class="btn primary" id="saveSet">Save</button>
   <div class="sect">This month's spending</div>
   <div id="hist"></div>
+  <div class="sect">Marked not successful</div>
+  <div class="meta" style="margin-bottom:4px">If you tapped "Not successful" by mistake, tap Redo to deduct it again.</div>
+  <div id="failed"></div>
   <button class="btn danger" id="resetAll">Erase all data</button>
   <button class="btn ghost" data-close>Close</button>
 </div></div>
@@ -175,6 +178,7 @@ let S;
 function load(){
   try{S=JSON.parse(localStorage.getItem(KEY))}catch(e){S=null}
   if(!S||!S.categories)S=defaults();
+  if(!Array.isArray(S.failed))S.failed=[];
 }
 function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){toast('Could not save data')}}
 
@@ -189,7 +193,7 @@ function rollover(){
       c.bal=c.cap;
     });
     S.month=nextMonth(S.month);
-    S.log=[];
+    S.log=[];S.failed=[];
     changed=true;
   }
   if(changed)save();
@@ -284,10 +288,19 @@ function checkAwaiting(){
   open('#doneSheet');
 }
 $('#doneYes').addEventListener('click',()=>{S.awaiting=null;save();close('#doneSheet');toast('Marked successful')});
+// Refund a logged payment to its category and keep it so it can be redone from Settings.
+function refundEntry(id){
+  const i=S.log.findIndex(x=>x.id===id);
+  if(i<0)return null;
+  const l=S.log[i],c=S.categories.find(x=>x.id===l.cat);
+  if(c)c.bal=Math.round((c.bal+l.amount)*100)/100;
+  S.log.splice(i,1);
+  S.failed.unshift(l);S.failed=S.failed.slice(0,10);
+  return l;
+}
 $('#doneNo').addEventListener('click',()=>{
-  const i=S.log.findIndex(x=>x.id===S.awaiting);
-  if(i>=0){const l=S.log[i],c=S.categories.find(x=>x.id===l.cat);if(c)c.bal=Math.round((c.bal+l.amount)*100)/100;S.log.splice(i,1)}
-  S.awaiting=null;save();render();close('#doneSheet');toast('Marked not successful. Amount returned to the category.')
+  refundEntry(S.awaiting);
+  S.awaiting=null;save();render();close('#doneSheet');toast('Marked not successful. You can redo it from Settings.');
 });
 
 // ---- settings
@@ -297,7 +310,7 @@ $('#openSettings').addEventListener('click',()=>{
   $('#setUpi').value=S.upi;
   $('#setScan').value=S.scanLink||'';
   draft=S.categories.map(c=>({id:c.id,name:c.name,alloc:c.alloc}));
-  renderRows();renderHist();open('#setSheet');
+  renderRows();renderHist();renderFailed();open('#setSheet');
 });
 function renderRows(){
   $('#catRows').innerHTML=draft.map((d,i)=>`<div class="row"><input class="n" data-i="${i}" data-f="name" value="${esc(d.name)}" aria-label="Category name"><input class="a" data-i="${i}" data-f="alloc" type="number" inputmode="decimal" value="${d.alloc}" aria-label="Amount"><button data-del="${i}" aria-label="Remove">×</button></div>`).join('');
@@ -341,10 +354,24 @@ function renderHist(){
 }
 $('#hist').addEventListener('click',e=>{
   const id=e.target.dataset.undo;if(!id)return;
-  const i=S.log.findIndex(l=>l.id===id);if(i<0)return;
-  const l=S.log[i],c=S.categories.find(x=>x.id===l.cat);
-  if(c)c.bal=Math.round((c.bal+l.amount)*100)/100;
-  S.log.splice(i,1);save();render();renderHist();toast('Refunded '+inr(l.amount)+' to '+l.catName);
+  const l=refundEntry(id);if(!l)return;
+  save();render();renderHist();renderFailed();toast('Refunded '+inr(l.amount)+' to '+l.catName);
+});
+function renderFailed(){
+  const h=$('#failed');
+  if(!S.failed.length){h.innerHTML='<div class="meta">Nothing here. Payments you mark "Not successful" appear here.</div>';return}
+  h.innerHTML=S.failed.map((l,k)=>`<div class="hist"><div>${inr(l.amount)} · ${esc(l.catName)}${k===0?' <small style="display:inline">(latest)</small>':''}<small>${esc(l.payee||'No payee noted')} · ${new Date(l.t).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'})}</small></div><button data-redo="${l.id}">Redo</button></div>`).join('');
+}
+$('#failed').addEventListener('click',e=>{
+  const id=e.target.dataset.redo;if(!id)return;
+  const i=S.failed.findIndex(x=>x.id===id);if(i<0)return;
+  const l=S.failed[i],c=S.categories.find(x=>x.id===l.cat);
+  if(!c){toast('That category no longer exists');return}
+  if(c.bal<l.amount){toast('Not enough left in '+c.name+' to redo '+inr(l.amount));return}
+  c.bal=Math.round((c.bal-l.amount)*100)/100;
+  S.failed.splice(i,1);
+  S.log.unshift(l);S.log.sort((x,y)=>y.t-x.t);
+  save();render();renderHist();renderFailed();toast('Redone: '+inr(l.amount)+' deducted from '+c.name);
 });
 $('#resetAll').addEventListener('click',()=>{
   if(!confirm('Erase everything and start over?'))return;
