@@ -57,7 +57,8 @@ header .month{color:var(--mute);font-size:15px}
 .btn.primary{background:var(--ink);color:var(--bg)}
 .btn.ghost{background:transparent;color:var(--ink);border:1.5px solid var(--line)}
 .btn.danger{background:transparent;color:#d6336c;border:1.5px solid var(--line)}
-.btn:disabled{opacity:.35}
+.btn:disabled,.btn.disabled{opacity:.35}
+.btn.disabled{pointer-events:none}
 a.btn{display:block;text-align:center;text-decoration:none}
 .apps{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 6px}
 .chip{border:1.5px solid var(--line);background:transparent;color:var(--ink);border-radius:999px;padding:7px 12px;font-size:13px;font-family:var(--body)}
@@ -110,7 +111,9 @@ a.btn{display:block;text-align:center;text-decoration:none}
   <div class="meta" id="payMeta"></div>
   <input class="amount" id="amt" type="number" inputmode="decimal" placeholder="₹0" min="0" step="any">
   <div class="after" id="after"></div>
-  <button class="btn primary" id="scanBtn" disabled>Scan QR</button>
+  <a class="btn primary disabled" id="openBtn" href="#">Open app to pay</a>
+  <div class="after" style="margin:6px 0 0;font-size:12px">Deducts the amount, copies it, and opens your UPI app. Scan the QR there and paste or type the amount.</div>
+  <button class="btn ghost" id="scanBtn" disabled>Scan QR here instead (pre-filled link)</button>
   <button class="btn ghost" id="cashBtn" disabled>Log cash spend</button>
   <button class="btn ghost" data-close>Cancel</button>
 </div></div>
@@ -152,6 +155,8 @@ a.btn{display:block;text-align:center;text-decoration:none}
     <option value="paytm">Paytm</option>
     <option value="generic">Other (iOS picks)</option>
   </select>
+  <label class="field" for="setScan">Experimental: link that opens the app's scanner (leave empty if unknown)</label>
+  <input id="setScan" placeholder="e.g. a scanner link you find for your app">
   <div class="sect">Categories</div>
   <div id="catRows"></div>
   <button class="btn ghost" id="addCat" style="margin-top:0">+ Add category</button>
@@ -264,10 +269,16 @@ $('#grid').addEventListener('click',e=>{
   $('#payTitle').textContent=c.name;
   $('#payMeta').textContent=inr(c.bal)+' left';
   $('#amt').value='';
+  setOpenLink();
   checkAmt();
   open('#paySheet');
   setTimeout(()=>$('#amt').focus(),150);
 });
+function setOpenLink(){
+  const b=$('#openBtn');
+  b.href=S.scanLink||SCHEMES[S.upi].open;
+  b.textContent='Open '+SCHEMES[S.upi].name+' to pay';
+}
 function amtVal(){const v=parseFloat($('#amt').value);return isFinite(v)?Math.round(v*100)/100:0}
 function checkAmt(){
   const v=amtVal(),a=$('#after');
@@ -275,6 +286,7 @@ function checkAmt(){
   a.classList.toggle('bad',v>cur.bal);
   a.textContent=v>cur.bal?('Over by '+inr(v-cur.bal)):(v>0?('Left after this: '+inr(cur.bal-v)):'');
   $('#scanBtn').disabled=!ok;$('#cashBtn').disabled=!ok;
+  $('#openBtn').classList.toggle('disabled',!ok);
 }
 $('#amt').addEventListener('input',checkAmt);
 
@@ -285,6 +297,14 @@ function spend(c,amount,payee){
   save();render();
   return id;
 }
+$('#openBtn').addEventListener('click',e=>{
+  const v=amtVal();
+  if(!(v>0&&v<=cur.bal)){e.preventDefault();return}
+  const id=spend(cur,v,SCHEMES[S.upi].name);
+  S.awaiting=id;save();
+  try{navigator.clipboard.writeText(v.toFixed(2)).catch(()=>{})}catch(err){}
+  close('#paySheet');
+});
 $('#cashBtn').addEventListener('click',()=>{
   const v=amtVal();if(!(v>0&&v<=cur.bal))return;
   spend(cur,v,'Cash');close('#paySheet');toast(inr(v)+' logged to '+cur.name);
@@ -502,6 +522,7 @@ let draft=[];
 $('#openSettings').addEventListener('click',()=>{
   $('#setBudget').value=S.budget;
   $('#setUpi').value=S.upi;
+  $('#setScan').value=S.scanLink||'';
   draft=S.categories.map(c=>({id:c.id,name:c.name,alloc:c.alloc}));
   renderRows();renderHist();open('#setSheet');
 });
@@ -537,7 +558,7 @@ $('#saveSet').addEventListener('click',()=>{
     if(old){const delta=d.alloc-old.alloc;return Object.assign({},old,{name:d.name.trim()||'Untitled',alloc:d.alloc,cap:old.cap+delta,bal:old.bal+delta})}
     return {id:uid(),name:d.name.trim()||'Untitled',alloc:d.alloc,cap:d.alloc,bal:d.alloc,carry:0};
   });
-  S.categories=next;S.budget=b;S.upi=$('#setUpi').value;
+  S.categories=next;S.budget=b;S.upi=$('#setUpi').value;S.scanLink=$('#setScan').value.trim();
   save();render();close('#setSheet');toast('Saved');
 });
 function renderHist(){
